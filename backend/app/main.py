@@ -49,10 +49,14 @@ SYSTEM_PROMPT = """你是一个专业的 CAD 工程师，擅长使用 CADQuery P
 规则：
 1. 只输出有效的 Python 代码，使用 CADQuery 库
 2. 代码必须完整可运行，包含所有必要的 import
-3. 使用 cq.Workplane() 开始建模
+3. 使用 cq.Workplane() 开始建模，保持简单可靠的建模方式
 4. 关键尺寸必须参数化（定义为变量）
-5. 添加注释说明关键步骤
+5. 添加注释说明关键步骤，注释必须使用中文
 6. 最后必须返回 result 变量
+7. 避免使用复杂的布尔运算（union/cut/intersect），优先使用简单的 extrude 和 cut
+8. 如果必须使用 union，确保所有对象都是 Workplane 对象，使用 .val() 或 . solids() 转换
+9. 不要使用 .sphere() 直接创建球体，使用 Workplane().sphere() 或将球体作为独立对象处理
+10. 代码必须能够直接运行不报错
 
 常用 CADQuery 操作：
 - 草图：.box(), .circle(), .rect()
@@ -189,7 +193,7 @@ def execute_cadquery_and_export(code: str, model_id: str) -> dict:
                     break
         
         if result is None:
-            return {"success": False, "error": "No result variable found in code"}
+            return {"success": False, "error": "代码中没有找到 result 变量"}
         
         # 导出 STL
         stl_path = f"{MODELS_DIR}/{model_id}.stl"
@@ -198,9 +202,48 @@ def execute_cadquery_and_export(code: str, model_id: str) -> dict:
         return {"success": True, "stl_path": stl_path}
         
     except Exception as e:
-        error_msg = f"Error executing CADQuery: {str(e)}\n{traceback.format_exc()}"
-        print(error_msg)
-        return {"success": False, "error": error_msg}
+        error_msg = str(e)
+        print(f"CADQuery 执行错误: {error_msg}")
+        
+        # 尝试修复常见错误
+        try:
+            print("尝试修复代码...")
+            fixed_code = code
+            import re
+            
+            # 修复1: 移除有问题的 fillet/chamfer
+            fixed_code = re.sub(
+                r'^(\s*)(result\s*=\s*.*\.edges\([^)]+\)\.(fillet|chamfer)\([^)]+\))',
+                r'\1# \2  # 已禁用：没有合适的边',
+                fixed_code, flags=re.MULTILINE
+            )
+            
+            # 修复2: 将 .sphere() 改为 Workplane 方式
+            if '.sphere(' in fixed_code and 'Workplane().sphere(' not in fixed_code:
+                # 如果直接用 .sphere()，需要特殊处理
+                pass  # 这种情况太难自动修复，让 LLM 重新生成
+            
+            namespace = {}
+            namespace['cq'] = cq
+            namespace['exporters'] = exporters
+            exec(fixed_code, namespace)
+            
+            result = namespace.get('result')
+            if result is None:
+                for var_name in ['model', 'part', 'shape', 'workplane']:
+                    if var_name in namespace:
+                        result = namespace[var_name]
+                        break
+            
+            if result:
+                stl_path = f"{MODELS_DIR}/{model_id}.stl"
+                exporters.export(result, stl_path, exporters.ExportTypes.STL)
+                print("修复成功")
+                return {"success": True, "stl_path": stl_path, "fixed": True}
+        except Exception as e2:
+            print(f"修复失败: {e2}")
+        
+        return {"success": False, "error": f"CADQuery 执行错误: {error_msg}"}
     finally:
         if 'temp_file' in locals() and os.path.exists(temp_file):
             os.unlink(temp_file)
@@ -260,9 +303,13 @@ async def process_generation(task_id: str, prompt: str):
     export_result = execute_cadquery_and_export(result["code"], model_id)
     
     if not export_result["success"]:
-        # 如果执行失败，创建 mock STL
-        stl_path = create_mock_stl(model_id)
-        print(f"CADQuery execution failed: {export_result.get('error')}")
+        tasks[task_id]["status"] = "failed"
+        tasks[task_id]["error"] = export_result.get("error", "生成 STL 失败")
+        # 仍然保存代码，方便调试
+        code_path = f"{MODELS_DIR}/{model_id}.py"
+        with open(code_path, 'w') as f:
+            f.write(result["code"])
+        return
     else:
         stl_path = export_result["stl_path"]
     
