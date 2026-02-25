@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI CADQuery - 智能参数化 CAD 建模平台</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/STLLoader.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background: #f5f7fa; }
+        .gradient-bg { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+        .canvas-container { background: linear-gradient(135deg, #f0f4f8 0%, #e2e8f0 100%); }
+        pre { background: #1e1e2e; color: #cdd6f4; }
+        .spinner { border-top-color: #667eea; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col">
+    <!-- Header -->
+    <header class="gradient-bg text-white py-8 px-4 text-center shadow-lg">
+        <h1 class="text-4xl font-bold mb-2">🎨 AI CADQuery</h1>
+        <p class="text-lg opacity-90">用自然语言设计 3D 模型 · 工程级 CAD 输出</p>
+    </header>
+
+    <!-- Main -->
+    <main class="flex-1 p-6">
+        <div class="max-w-7xl mx-auto grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Left Panel -->
+            <div class="lg:col-span-1 space-y-6">
+                <!-- Input -->
+                <div class="bg-white rounded-xl p-6 shadow-md">
+                    <h3 class="text-lg font-semibold mb-4 text-gray-800">描述你的设计</h3>
+                    <textarea id="prompt" rows="5" 
+                        class="w-full p-4 border-2 border-gray-200 rounded-lg focus:border-indigo-500 focus:outline-none resize-none"
+                        placeholder="例如：设计一个 M4 螺丝的固定支架，长 50mm，宽 30mm，厚度 5mm，中间开 4.5mm 的通孔..."></textarea>
+                    
+                    <button id="generateBtn" onclick="generateModel()"
+                        class="w-full mt-4 py-3 gradient-bg text-white font-semibold rounded-lg hover:opacity-90 transition">
+                        🚀 生成模型
+                    </button>
+                    
+                    <div id="error" class="hidden mt-4 p-4 bg-red-100 text-red-700 rounded-lg border-l-4 border-red-500"></div>
+                </div>
+
+                <!-- Parameters -->
+                <div id="paramsPanel" class="bg-white rounded-xl p-6 shadow-md hidden">
+                    <h3 class="text-lg font-semibold mb-4 text-gray-800">🔧 可调参数</h3>
+                    <div id="paramsList"></div>
+                </div>
+            </div>
+
+            <!-- Right Panel -->
+            <div class="lg:col-span-2 space-y-6">
+                <!-- 3D Preview -->
+                <div class="bg-white rounded-xl p-6 shadow-md">
+                    <h3 class="text-lg font-semibold mb-4 text-gray-800">🔍 3D 预览</h3>
+                    <div id="canvasContainer" class="canvas-container rounded-lg h-96 relative">
+                        <div id="loading" class="hidden absolute inset-0 bg-white/90 flex flex-col items-center justify-center">
+                            <div class="spinner w-10 h-10 border-4 border-gray-200 rounded-full animate-spin"></div>
+                            <p class="mt-4 text-gray-600">AI 正在生成模型...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Code -->
+                <div id="codePanel" class="bg-white rounded-xl p-6 shadow-md hidden">
+                    <h3 class="text-lg font-semibold mb-4 text-gray-800">📄 CADQuery 代码</h3>
+                    <pre id="codeBlock" class="p-4 rounded-lg overflow-x-auto text-sm"></pre>
+                </div>
+
+                <!-- Downloads -->
+                <div id="downloadPanel" class="bg-white rounded-xl p-6 shadow-md hidden">
+                    <h3 class="text-lg font-semibold mb-4 text-gray-800">💾 下载文件</h3>
+                    <div class="flex gap-4">
+                        <a id="stlLink" href="#" download
+                            class="px-6 py-3 bg-green-500 text-white font-semibold rounded-lg hover:bg-green-600 transition"
+                        >
+                            📦 下载 STL
+                        </a>
+                        <a id="pyLink" href="#" download
+                            class="px-6 py-3 bg-blue-500 text-white font-semibold rounded-lg hover:bg-blue-600 transition"
+                        >
+                            🐍 下载 Python
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="bg-gray-800 text-gray-400 py-6 text-center">
+        <p>AI CADQuery © 2026 · 智能参数化 CAD 建模平台 · Powered by CADQuery & LLM</p>
+    </footer>
+
+    <script>
+        const API_URL = 'http://localhost:8000';
+        let scene, camera, renderer, mesh;
+        let taskId = '';
+
+        // Init Three.js
+        function init3D() {
+            const container = document.getElementById('canvasContainer');
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0xf0f4f8);
+
+            camera = new THREE.PerspectiveCamera(50, container.clientWidth / container.clientHeight, 0.1, 100);
+            camera.position.set(3, 3, 3);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(container.clientWidth, container.clientHeight);
+            renderer.shadowMap.enabled = true;
+            container.appendChild(renderer.domElement);
+
+            // Lights
+            const ambient = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambient);
+            const directional = new THREE.DirectionalLight(0xffffff, 1);
+            directional.position.set(10, 10, 5);
+            directional.castShadow = true;
+            scene.add(directional);
+
+            // Grid
+            const grid = new THREE.GridHelper(10, 10, 0x888888, 0xcccccc);
+            scene.add(grid);
+
+            // Default placeholder
+            createPlaceholder();
+
+            // Controls
+            let isDragging = false;
+            let previousMouse = { x: 0, y: 0 };
+            
+            renderer.domElement.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                previousMouse = { x: e.clientX, y: e.clientY };
+            });
+            
+            renderer.domElement.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                const deltaX = e.clientX - previousMouse.x;
+                const deltaY = e.clientY - previousMouse.y;
+                
+                mesh.rotation.y += deltaX * 0.01;
+                mesh.rotation.x += deltaY * 0.01;
+                
+                previousMouse = { x: e.clientX, y: e.clientY };
+            });
+            
+            renderer.domElement.addEventListener('mouseup', () => isDragging = false);
+            renderer.domElement.addEventListener('wheel', (e) => {
+                camera.position.z += e.deltaY * 0.01;
+                camera.position.z = Math.max(1, Math.min(10, camera.position.z));
+            });
+
+            animate();
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            if (mesh) mesh.rotation.y += 0.002;
+            renderer.render(scene, camera);
+        }
+
+        // Generate model
+        async function generateModel() {
+            const prompt = document.getElementById('prompt').value.trim();
+            if (!prompt) return;
+
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('error').classList.add('hidden');
+            document.getElementById('generateBtn').disabled = true;
+
+            try {
+                const res = await fetch(`${API_URL}/api/generate`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ prompt })
+                });
+
+                const data = await res.json();
+                taskId = data.task_id;
+
+                // Poll for result
+                pollResult();
+            } catch (err) {
+                showError(err.message);
+            }
+        }
+
+        async function pollResult() {
+            try {
+                const res = await fetch(`${API_URL}/api/tasks/${taskId}`);
+                const data = await res.json();
+
+                if (data.status === 'completed') {
+                    showResult(data.result);
+                } else if (data.status === 'failed') {
+                    showError(data.error || '生成失败');
+                } else {
+                    setTimeout(pollResult, 2000);
+                }
+            } catch (err) {
+                showError(err.message);
+            }
+        }
+
+        function showResult(result) {
+            document.getElementById('loading').classList.add('hidden');
+            document.getElementById('generateBtn').disabled = false;
+
+            // Show code
+            document.getElementById('codePanel').classList.remove('hidden');
+            document.getElementById('codeBlock').textContent = result.code;
+
+            // Show parameters
+            if (result.parameters && Object.keys(result.parameters).length > 0) {
+                document.getElementById('paramsPanel').classList.remove('hidden');
+                window.currentParams = result.parameters;
+                window.currentCode = result.code;
+                renderParams();
+            }
+
+            // Show downloads
+            document.getElementById('downloadPanel').classList.remove('hidden');
+            document.getElementById('stlLink').href = `${API_URL}${result.downloads.stl}`;
+            document.getElementById('pyLink').href = `${API_URL}${result.downloads.python}`;
+
+            // Update 3D preview - Load real STL
+            if (result.model_id) {
+                loadSTL(`${API_URL}/api/models/${result.model_id}/download?format=stl`);
+            }
+        }
+
+        function renderParams() {
+            const paramsHtml = Object.entries(window.currentParams).map(([key, param]) => `
+                <div class="mb-4">
+                    <div class="flex justify-between mb-1">
+                        <span class="text-gray-600">${key}</span>
+                        <span class="text-indigo-600 font-semibold" id="val-${key}">${param.value} ${param.unit || ''}</span>
+                    </div>
+                    <input type="range" min="${param.min}" max="${param.max}" value="${param.value}" step="${(param.max - param.min) / 100}"
+                        class="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer"
+                        oninput="updateParam('${key}', this.value)">
+                </div>
+            `).join('');
+            document.getElementById('paramsList').innerHTML = paramsHtml;
+        }
+
+        function updateParam(key, value) {
+            // Update stored value
+            window.currentParams[key].value = parseFloat(value);
+            // Update label
+            document.getElementById(`val-${key}`).textContent = `${value} ${window.currentParams[key].unit || ''}`;
+            // Update code display
+            updateCodeDisplay();
+            // Note: 3D preview update would require re-generating the STL
+        }
+
+        function updateCodeDisplay() {
+            let updatedCode = window.currentCode;
+            Object.entries(window.currentParams).forEach(([key, param]) => {
+                // Replace variable assignment in code
+                const regex = new RegExp(`^(${key}\\s*=\\s*)[\\d.]+`, 'm');
+                updatedCode = updatedCode.replace(regex, `$1${param.value}`);
+            });
+            document.getElementById('codeBlock').textContent = updatedCode;
+        }
+
+        // Load STL file
+        function loadSTL(url) {
+            // Remove old mesh
+            if (mesh) {
+                scene.remove(mesh);
+                mesh = null;
+            }
+
+            const loader = new THREE.STLLoader();
+            loader.load(url, function(geometry) {
+                // Center the geometry
+                geometry.computeBoundingBox();
+                const center = geometry.boundingBox.getCenter(new THREE.Vector3());
+                geometry.translate(-center.x, -center.y, -center.z);
+
+                // Create material
+                const material = new THREE.MeshStandardMaterial({ 
+                    color: 0x4f46e5, 
+                    metalness: 0.3, 
+                    roughness: 0.4 
+                });
+
+                mesh = new THREE.Mesh(geometry, material);
+                mesh.castShadow = true;
+                mesh.receiveShadow = true;
+
+                // Scale to reasonable size
+                const box = new THREE.Box3().setFromObject(mesh);
+                const size = box.getSize(new THREE.Vector3());
+                const maxDim = Math.max(size.x, size.y, size.z);
+                const scale = 2 / maxDim;
+                mesh.scale.set(scale, scale, scale);
+
+                // Position above grid
+                mesh.position.y = size.y * scale / 2;
+
+                scene.add(mesh);
+            }, function(xhr) {
+                console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+            }, function(error) {
+                console.error('Error loading STL:', error);
+                // Fallback to placeholder
+                createPlaceholder();
+            });
+        }
+
+        function createPlaceholder() {
+            const geometry = new THREE.BoxGeometry(1, 0.1, 0.6);
+            const material = new THREE.MeshStandardMaterial({ 
+                color: 0x4f46e5, 
+                metalness: 0.3, 
+                roughness: 0.4 
+            });
+            mesh = new THREE.Mesh(geometry, material);
+            mesh.position.y = 0.05;
+            mesh.castShadow = true;
+            scene.add(mesh);
+        }
+
+        function showError(msg) {
+            document.getElementById('loading').classList.add('hidden');
+            document.getElementById('generateBtn').disabled = false;
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = '❌ ' + msg;
+            errorDiv.classList.remove('hidden');
+        }
+
+        // Init
+        window.onload = init3D;
+        window.onresize = () => {
+            if (!renderer || !camera) return;
+            const container = document.getElementById('canvasContainer');
+            camera.aspect = container.clientWidth / container.clientHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(container.clientWidth, container.clientHeight);
+        };
+    </script>
+</body>
+</html>

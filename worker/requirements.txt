@@ -1,0 +1,7 @@
+cadquery==2.4.0
+cadquery-ocp==7.7.2
+redis==5.0.1
+celery==5.3.6
+openai==1.10.0
+anthropic==0.18.0
+requests==2.31.0
