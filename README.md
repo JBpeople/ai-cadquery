@@ -2,6 +2,8 @@
 
 用自然语言设计 3D 模型，生成工程级 CAD 文件。
 
+![项目截图](screenshot.png)
+
 [![Python](https://img.shields.io/badge/Python-3.11-blue)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.109-green)](https://fastapi.tiangolo.com)
 [![CADQuery](https://img.shields.io/badge/CADQuery-2.7-orange)](https://cadquery.readthedocs.io)
